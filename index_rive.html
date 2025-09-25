@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VantaBuddy</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Kanit:wght@400;700&display=swap');
+html, body { margin:0; padding:0; font-family:"Kanit",sans-serif; background:#fff; }
+
+/* Centered canvas; JS sets backing size for Hi-DPI crispness */
+#riveCanvas {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  display: block; z-index: 1;
+}
+
+/* Controls */
+.controls {
+  position: fixed; right: 16px; top: 16px; z-index: 2;
+  background: rgba(255,255,255,0.96); backdrop-filter: blur(6px);
+  border: 1px solid #e5e7eb; border-radius: 14px; padding: 14px; max-width: 420px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.08); display:none;
+}
+.controls h3 { margin:0 0 8px; font-weight:700; font-size:16px; }
+.group { margin-top: 12px; }
+.group label { font-size:13px; display:block; margin-bottom:6px; opacity:.85; }
+.row { display:grid; grid-template-columns: 1fr auto; gap:10px; align-items:center; margin-bottom:8px; }
+.badge { font-size:11px; color:#9ca3af; margin-left:6px; }
+.range-row { display:grid; grid-template-columns: 1fr auto auto; align-items:center; gap:10px; margin-bottom:10px; }
+.range-row input[type="range"] { width:210px; }
+.kv { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:11px; padding:2px 6px; background:#f3f4f6; border-radius:6px; }
+.sub { font-size:12px; color:#6b7280; margin:10px 0 0; word-break:break-word; }
+.warn { position:fixed; left:16px; right:16px; bottom:16px; z-index:3; background:#fee2e2; color:#991b1b; border:1px solid #fecaca; border-radius:12px; padding:12px 14px; display:none; }
+.warn code { background:#fff; padding:2px 6px; border-radius:6px; }
+</style>
+</head>
+<body>
+  <canvas id="riveCanvas"></canvas>
+
+  <div class="controls" id="panel">
+    <h3>Buddy Controls</h3>
+    <div class="group">
+      <label>Motion (pick one)</label>
+      <div class="row"><span>jumping <em class="badge" id="nf-jumping" style="display:none;">(not found)</em></span><input type="checkbox" id="motion-jumping"></div>
+      <div class="row"><span>floating <em class="badge" id="nf-floating" style="display:none;">(not found)</em></span><input type="checkbox" id="motion-floating"></div>
+      <div class="row"><span>floating2 <em class="badge" id="nf-floating2" style="display:none;">(not found)</em></span><input type="checkbox" id="motion-floating2"></div>
+    </div>
+
+    <div class="group">
+      <label>Direction (pick one)</label>
+      <div class="row"><span>turnup <em class="badge" id="nf-turnup" style="display:none;">(not found)</em></span><input type="checkbox" id="dir-turnup"></div>
+      <div class="row"><span>turndown <em class="badge" id="nf-turndown" style="display:none;">(not found)</em></span><input type="checkbox" id="dir-turndown"></div>
+      <div class="row"><span>turnleft <em class="badge" id="nf-turnleft" style="display:none;">(not found)</em></span><input type="checkbox" id="dir-turnleft"></div>
+      <div class="row"><span>turnright <em class="badge" id="nf-turnright" style="display:none;">(not found)</em></span><input type="checkbox" id="dir-turnright"></div>
+    </div>
+
+    <div class="group">
+      <label>Axis toggles (show slider when ON)</label>
+      <div class="row"><span>updown <em class="badge" id="nf-updown" style="display:none;">(not found)</em></span><input type="checkbox" id="ax-updown"></div>
+      <div class="range-row" id="row-fromuptobottom" style="display:none;">
+        <span>fromuptobottom <em class="badge" id="nf-fromuptobottom" style="display:none;">(not found)</em></span>
+        <input type="range" id="fromuptobottom" min="0" max="100" step="1" value="0"><span class="kv" id="val-fromuptobottom">0</span>
+      </div>
+
+      <div class="row"><span>rightleft <em class="badge" id="nf-rightleft" style="display:none;">(not found)</em></span><input type="checkbox" id="ax-rightleft"></div>
+      <div class="range-row" id="row-fromlefttoright" style="display:none;">
+        <span>fromlefttoright <em class="badge" id="nf-fromlefttoright" style="display:none;">(not found)</em></span>
+        <input type="range" id="fromlefttoright" min="0" max="100" step="1" value="0"><span class="kv" id="val-fromlefttoright">0</span>
+      </div>
+    </div>
+
+    <p class="sub"><strong>Detected inputs:</strong> <span id="typesNote">(detecting…)</span></p>
+  </div>
+
+  <div class="warn" id="warn"></div>
+
+  <script src="https://unpkg.com/@rive-app/canvas"></script>
+  <script>
+  // ====== CONFIG (case-sensitive) ======
+  const RIVE_FILE = "vantabuddy.riv";
+  const ARTBOARD = "buddy";
+  const STATE_MACHINE = "vantabuddy";
+  // =====================================
+
+  const canvas = document.getElementById("riveCanvas");
+  const panel  = document.getElementById("panel");
+  const warn   = document.getElementById("warn");
+  const typesNote = document.getElementById("typesNote");
+
+  // current selections
+  let selectedMotion = null; // jumping | floating | floating2
+  let selectedDir    = null; // turnup | turndown | turnleft | turnright
+
+  // rive
+  let riveInstance = null;
+  let inputMap = new Map();
+  let panelEnabled = false;
+
+  // ---- Hi-DPI centered canvas ----
+  function layoutCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const sideCss = Math.max(320, Math.min(800, Math.round(Math.min(innerWidth, innerHeight) * 0.7)));
+    canvas.style.width = sideCss + "px";
+    canvas.style.height = sideCss + "px";
+    canvas.width  = Math.round(sideCss * dpr);
+    canvas.height = Math.round(sideCss * dpr);
+    if (riveInstance && typeof riveInstance.devicePixelRatio === "number") {
+      riveInstance.devicePixelRatio = dpr;
+    }
+  }
+  addEventListener("resize", layoutCanvas);
+  layoutCanvas();
+
+  // ---- helpers ----
+  function lockPanel(lock){ panelEnabled = !lock; panel.querySelectorAll("input").forEach(el=>el.disabled=lock); }
+  function showWarn(msg){ warn.innerHTML = msg; warn.style.display = "block"; }
+  function hideWarn(){ warn.style.display = "none"; }
+  function raf2(fn){ requestAnimationFrame(()=>requestAnimationFrame(fn)); }
+
+  function rebuildInputMap(){
+    inputMap.clear();
+    const arr = riveInstance?.stateMachineInputs(STATE_MACHINE) || [];
+    for (const inp of arr) if (inp && inp.name) inputMap.set(inp.name, inp);
+  }
+  function getInput(name){ rebuildInputMap(); return inputMap.get(name) || null; }
+  function tName(inp){
+    if (!inp) return "Unknown";
+    if (rive.StateMachineInputType) {
+      for (const [k,v] of Object.entries(rive.StateMachineInputType)) if (v === inp.type) return k;
+    }
+    if (typeof inp.fire === "function") return "Trigger";
+    if (typeof inp.value === "boolean") return "Boolean";
+    if (typeof inp.value === "number") return "Number";
+    return "Unknown";
+  }
+  const isBool = inp => inp && (rive.StateMachineInputType ? inp.type === rive.StateMachineInputType.Boolean : typeof inp.value === "boolean");
+  const isNum  = inp => inp && (rive.StateMachineInputType ? inp.type === rive.StateMachineInputType.Number  : typeof inp.value === "number");
+
+  function setBoolean(inp, desired){
+    if (!inp) return;
+    const cur = inp.value;
+    if (typeof cur !== "boolean") return;
+    if (cur === desired){ try{inp.value=!desired;}catch(e){} raf2(()=>{ try{inp.value=desired;}catch(e){} }); }
+    else { try{inp.value=desired;}catch(e){} }
+  }
+  function setNumber(inp, v){
+    if (!inp) return;
+    v = Number(v); const cur = inp.value;
+    if (typeof cur !== "number") return;
+    if (Object.is(cur, v)){ try{inp.value=v+0.0001;}catch(e){} raf2(()=>{ try{inp.value=v;}catch(e){} }); }
+    else { try{inp.value=v;}catch(e){} }
+  }
+
+  function markMissingBadges(){
+    const names = Array.from((riveInstance?.stateMachineInputs(STATE_MACHINE) || [])).map(i=>i.name);
+    document.querySelectorAll('.badge[id^="nf-"]').forEach(el => {
+      const name = el.id.replace("nf-","");
+      el.style.display = names.includes(name) ? "none" : "inline";
+    });
+    typesNote.textContent = names.length ? names.join(" · ") : "(no inputs found)";
+  }
+
+  // ---- restart + apply selected states and current slider values ----
+  function restartAndApply() {
+    lockPanel(true);
+    if (riveInstance){ try { riveInstance.cleanup(); } catch(e){} }
+    const dpr = window.devicePixelRatio || 1;
+    riveInstance = new rive.Rive({
+      src: RIVE_FILE,
+      canvas: canvas,
+      artboard: ARTBOARD,
+      stateMachines: STATE_MACHINE,
+      autoplay: true,
+      fit: rive.Fit.Contain,
+      alignment: rive.Alignment.Center,
+      devicePixelRatio: dpr,
+      onLoad: () => {
+        rebuildInputMap();
+        markMissingBadges();
+
+        // Motion (exclusive)
+        ["jumping","floating","floating2"].forEach(name => {
+          const inp = getInput(name);
+          if (inp && isBool(inp)) setBoolean(inp, name === selectedMotion);
+        });
+
+        // Direction (exclusive)
+        ["turnup","turndown","turnleft","turnright"].forEach(name => {
+          const inp = getInput(name);
+          if (inp && isBool(inp)) setBoolean(inp, name === selectedDir);
+        });
+
+        // Axis toggles
+        const updownCB    = document.getElementById("ax-updown");
+        const rightleftCB = document.getElementById("ax-rightleft");
+        const updownInp = getInput("updown");
+        const rightleftInp = getInput("rightleft");
+        if (updownInp && isBool(updownInp)) setBoolean(updownInp, !!updownCB.checked);
+        if (rightleftInp && isBool(rightleftInp)) setBoolean(rightleftInp, !!rightleftCB.checked);
+
+        // Reapply sliders (0–100) if their toggles are ON
+        const fub = getInput("fromuptobottom");
+        const flr = getInput("fromlefttoright");
+        const vFub = Number(document.getElementById("fromuptobottom").value);
+        const vFlr = Number(document.getElementById("fromlefttoright").value);
+        if (fub && isNum(fub) && updownCB.checked) setNumber(fub, vFub);
+        if (flr && isNum(flr) && rightleftCB.checked) setNumber(flr, vFlr);
+
+        lockPanel(false);
+      },
+      onError: (e)=>{ console.error("[rive] restart load error:", e); lockPanel(false); }
+    });
+  }
+
+  // ---- initial load ----
+  function createRive(){
+    lockPanel(true); hideWarn();
+    const dpr = window.devicePixelRatio || 1;
+    riveInstance = new rive.Rive({
+      src: RIVE_FILE,
+      canvas: canvas,
+      artboard: ARTBOARD,
+      stateMachines: STATE_MACHINE,
+      autoplay: true,
+      fit: rive.Fit.Contain,
+      alignment: rive.Alignment.Center,
+      devicePixelRatio: dpr,
+      onLoad: () => {
+        rebuildInputMap();
+        panel.style.display = "block";
+        markMissingBadges();
+        lockPanel(false);
+      },
+      onError: (err) => {
+        console.error("[rive] Load Error:", err);
+        showWarn("Failed to load <code>"+RIVE_FILE+"</code>. Check the file path and the exact Artboard/State Machine names.");
+        lockPanel(false);
+      }
+    });
+  }
+
+  // ---- wire UI ----
+  // Motion (exclusive) → restart
+  ["jumping","floating","floating2"].forEach(name => {
+    const el = document.getElementById("motion-"+name);
+    el.addEventListener("change", ()=>{
+      if (!panelEnabled) return;
+      selectedMotion = name;
+      ["jumping","floating","floating2"].forEach(n=>{
+        if (n!==name) document.getElementById("motion-"+n).checked = false;
+      });
+      restartAndApply();
+    });
+  });
+
+  // Direction (exclusive) → restart
+  ["turnup","turndown","turnleft","turnright"].forEach(name => {
+    const el = document.getElementById("dir-"+name);
+    el.addEventListener("change", ()=>{
+      if (!panelEnabled) return;
+      selectedDir = name;
+      ["turnup","turndown","turnleft","turnright"].forEach(n=>{
+        if (n!==name) document.getElementById("dir-"+n).checked = false;
+      });
+      restartAndApply();
+    });
+  });
+
+  // Axis toggles → show/hide slider + restart
+  document.getElementById("ax-updown").addEventListener("change", ()=>{
+    const on = document.getElementById("ax-updown").checked;
+    document.getElementById("row-fromuptobottom").style.display = on ? "grid" : "none";
+    if (!panelEnabled) return;
+    restartAndApply();
+  });
+  document.getElementById("ax-rightleft").addEventListener("change", ()=>{
+    const on = document.getElementById("ax-rightleft").checked;
+    document.getElementById("row-fromlefttoright").style.display = on ? "grid" : "none";
+    if (!panelEnabled) return;
+    restartAndApply();
+  });
+
+  // Sliders (0–100) → live update (no restart). Apply only if their toggle is ON.
+  const fubEl = document.getElementById("fromuptobottom");
+  const flrEl = document.getElementById("fromlefttoright");
+  const fubVal = document.getElementById("val-fromuptobottom");
+  const flrVal = document.getElementById("val-fromlefttoright");
+
+  function applyFub(){
+    fubVal.textContent = fubEl.value;
+    const inp = getInput("fromuptobottom");
+    if (inp && isNum(inp) && document.getElementById("ax-updown").checked) {
+      setNumber(inp, Number(fubEl.value)); // 0–100
+    }
+  }
+  function applyFlr(){
+    flrVal.textContent = flrEl.value;
+    const inp = getInput("fromlefttoright");
+    if (inp && isNum(inp) && document.getElementById("ax-rightleft").checked) {
+      setNumber(inp, Number(flrEl.value)); // 0–100
+    }
+  }
+
+  fubEl.addEventListener("input", applyFub);  // live
+  fubEl.addEventListener("change", applyFub); // safety
+  flrEl.addEventListener("input", applyFlr);
+  flrEl.addEventListener("change", applyFlr);
+
+  // Boot
+  createRive();
+  </script>
+</body>
+</html>
